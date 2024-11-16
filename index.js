@@ -1,6 +1,7 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const request = require("request");
+const crypto = require("crypto");
 const dotenv = require("dotenv");
 
 // Load environment variables
@@ -12,12 +13,29 @@ const PORT = process.env.PORT || 3000;
 // Environment variables
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const APP_SECRET = process.env.APP_SECRET;
 
-// Middleware
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// Middleware for parsing requests
+app.use(bodyParser.json({ verify: verifyRequestSignature }));
 
-// Function to get the current greeting based on the time
+// Function to verify the request signature from Facebook
+function verifyRequestSignature(req, res, buf) {
+  const signature = req.headers["x-hub-signature-256"];
+  if (!signature) {
+    console.warn("No signature found.");
+  } else {
+    const hash = crypto
+      .createHmac("sha256", APP_SECRET)
+      .update(buf)
+      .digest("hex");
+    const expectedSignature = `sha256=${hash}`;
+    if (signature !== expectedSignature) {
+      throw new Error("Request signature validation failed.");
+    }
+  }
+}
+
+// Function to get the current greeting based on time
 function getTimeBasedGreeting() {
   const now = new Date();
   const hours = now.getHours();
@@ -33,7 +51,8 @@ app.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode && token === VERIFY_TOKEN) {
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("Webhook verified successfully.");
     res.status(200).send(challenge);
   } else {
     res.status(403).send("Forbidden");
@@ -46,18 +65,21 @@ app.post("/webhook", (req, res) => {
 
   if (body.object === "page") {
     body.entry.forEach((entry) => {
+      // Log incoming events
+      console.log("Webhook Event:", JSON.stringify(entry));
+
+      // Handle specific changes (like/follow events)
       if (entry.changes) {
         entry.changes.forEach((change) => {
-          // Detect like/follow event
           if (change.field === "feed" && change.value.verb === "add") {
-            const senderId = change.value.from.id; // User who liked/followed
-            const userName = change.value.from.name; // User's name
+            const senderId = change.value.from.id;
+            const userName = change.value.from.name;
 
             const greeting = getTimeBasedGreeting();
-            const message = `${greeting}, ${userName}! Thank you for following our page. We truly appreciate your support. 😊`;
+            const message = `${greeting}, ${userName}! Thank you for following our page. We’re excited to connect with you! 😊`;
 
-            // Send personalized greeting with an image
-            sendMessageWithImage(senderId, message, "https://i.ibb.co/2cQVbcb");
+            // Send a rich message with quick replies and an image
+            sendRichMessage(senderId, message);
           }
         });
       }
@@ -69,27 +91,39 @@ app.post("/webhook", (req, res) => {
   }
 });
 
-// Function to send a message with an image via the Messenger API
-function sendMessageWithImage(senderId, message, imageUrl) {
+// Function to send a message with quick replies and an image
+function sendRichMessage(senderId, message) {
   const payload = {
     recipient: { id: senderId },
     message: {
       attachment: {
-        type: "image",
+        type: "template",
         payload: {
-          url: imageUrl,
-          is_reusable: true,
+          template_type: "generic",
+          elements: [
+            {
+              title: message,
+              image_url: "https://i.ibb.co/2cQVbcb", // Your hosted image
+              subtitle: "Explore our page for more updates!",
+              buttons: [
+                {
+                  type: "web_url",
+                  url: "https://your-website.com",
+                  title: "Visit Our Website",
+                },
+                {
+                  type: "postback",
+                  title: "Contact Us",
+                  payload: "CONTACT_US",
+                },
+              ],
+            },
+          ],
         },
       },
     },
   };
 
-  const textPayload = {
-    recipient: { id: senderId },
-    message: { text: message },
-  };
-
-  // Send image first
   request.post(
     {
       uri: `https://graph.facebook.com/v12.0/me/messages`,
@@ -98,29 +132,19 @@ function sendMessageWithImage(senderId, message, imageUrl) {
     },
     (err, res, body) => {
       if (err) {
-        console.error("Unable to send image:", err);
+        console.error("Error sending message:", err);
       } else {
-        console.log("Image sent successfully!");
-
-        // Send the text message after the image
-        request.post(
-          {
-            uri: `https://graph.facebook.com/v12.0/me/messages`,
-            qs: { access_token: PAGE_ACCESS_TOKEN },
-            json: textPayload,
-          },
-          (err, res, body) => {
-            if (err) {
-              console.error("Unable to send text message:", err);
-            } else {
-              console.log("Text message sent successfully!");
-            }
-          }
-        );
+        console.log("Message sent successfully!");
       }
     }
   );
 }
+
+// Function to handle errors
+app.use((err, req, res, next) => {
+  console.error("Error occurred:", err.message);
+  res.status(500).send({ error: "Something went wrong!" });
+});
 
 // Start the server
 app.listen(PORT, () => {
