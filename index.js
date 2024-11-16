@@ -27,20 +27,6 @@ function getTimeBasedGreeting() {
   return "Good Evening";
 }
 
-// Function to fetch user details from Facebook Graph API
-function getUserDetails(senderId, callback) {
-  const url = `https://graph.facebook.com/${senderId}?fields=first_name&access_token=${PAGE_ACCESS_TOKEN}`;
-  request.get(url, (err, res, body) => {
-    if (err) {
-      console.error("Error fetching user details:", err);
-      callback(null);
-    } else {
-      const user = JSON.parse(body);
-      callback(user.first_name || "there");
-    }
-  });
-}
-
 // Webhook Verification Endpoint
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -60,19 +46,19 @@ app.post("/webhook", (req, res) => {
 
   if (body.object === "page") {
     body.entry.forEach((entry) => {
-      const event = entry.messaging ? entry.messaging[0] : null;
+      if (entry.changes) {
+        entry.changes.forEach((change) => {
+          // Detect like/follow event
+          if (change.field === "feed" && change.value.verb === "add") {
+            const senderId = change.value.from.id; // User who liked/followed
+            const userName = change.value.from.name; // User's name
 
-      // Check if the event is a page follow or like
-      if (event && event.sender) {
-        const senderId = event.sender.id;
+            const greeting = getTimeBasedGreeting();
+            const message = `${greeting}, ${userName}! Thank you for following our page. We truly appreciate your support. 😊`;
 
-        // Fetch user details to send a personalized message
-        getUserDetails(senderId, (username) => {
-          const greeting = getTimeBasedGreeting();
-          const message = `${greeting}, ${username}! Thank you for liking our page. 😊 Here's something special for you.`;
-
-          // Send a message with an image
-          sendMessageWithImage(senderId, message, "https://ibb.co/2cQVbcb");
+            // Send personalized greeting with an image
+            sendMessageWithImage(senderId, message, "https://i.ibb.co/2cQVbcb");
+          }
         });
       }
     });
@@ -89,25 +75,21 @@ function sendMessageWithImage(senderId, message, imageUrl) {
     recipient: { id: senderId },
     message: {
       attachment: {
-        type: "template",
+        type: "image",
         payload: {
-          template_type: "generic",
-          elements: [
-            {
-              title: message,
-              image_url: imageUrl,
-              subtitle: "We appreciate your support!",
-              default_action: {
-                type: "web_url",
-                url: "https://auto-greetings.onrender.com", // Add your website here
-              },
-            },
-          ],
+          url: imageUrl,
+          is_reusable: true,
         },
       },
     },
   };
 
+  const textPayload = {
+    recipient: { id: senderId },
+    message: { text: message },
+  };
+
+  // Send image first
   request.post(
     {
       uri: `https://graph.facebook.com/v12.0/me/messages`,
@@ -115,10 +97,26 @@ function sendMessageWithImage(senderId, message, imageUrl) {
       json: payload,
     },
     (err, res, body) => {
-      if (!err) {
-        console.log("Message sent successfully:", message);
+      if (err) {
+        console.error("Unable to send image:", err);
       } else {
-        console.error("Unable to send message:", err);
+        console.log("Image sent successfully!");
+
+        // Send the text message after the image
+        request.post(
+          {
+            uri: `https://graph.facebook.com/v12.0/me/messages`,
+            qs: { access_token: PAGE_ACCESS_TOKEN },
+            json: textPayload,
+          },
+          (err, res, body) => {
+            if (err) {
+              console.error("Unable to send text message:", err);
+            } else {
+              console.log("Text message sent successfully!");
+            }
+          }
+        );
       }
     }
   );
