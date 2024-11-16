@@ -1,7 +1,6 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const request = require("request");
-const crypto = require("crypto");
 const dotenv = require("dotenv");
 
 // Load environment variables
@@ -13,39 +12,11 @@ const PORT = process.env.PORT || 3000;
 // Environment variables
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-const APP_SECRET = process.env.APP_SECRET;
 
 // Middleware for parsing requests
-app.use(bodyParser.json({ verify: verifyRequestSignature }));
+app.use(bodyParser.json());
 
-// Function to verify the request signature from Facebook
-function verifyRequestSignature(req, res, buf) {
-  const signature = req.headers["x-hub-signature-256"];
-  if (!signature) {
-    console.warn("No signature found.");
-  } else {
-    const hash = crypto
-      .createHmac("sha256", APP_SECRET)
-      .update(buf)
-      .digest("hex");
-    const expectedSignature = `sha256=${hash}`;
-    if (signature !== expectedSignature) {
-      throw new Error("Request signature validation failed.");
-    }
-  }
-}
-
-// Function to get the current greeting based on time
-function getTimeBasedGreeting() {
-  const now = new Date();
-  const hours = now.getHours();
-
-  if (hours < 12) return "Good Morning";
-  if (hours < 18) return "Good Afternoon";
-  return "Good Evening";
-}
-
-// Webhook Verification Endpoint
+// Function to verify Facebook Webhook
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -63,12 +34,25 @@ app.get("/webhook", (req, res) => {
 app.post("/webhook", (req, res) => {
   const body = req.body;
 
+  // Ensure this is a page event
   if (body.object === "page") {
     body.entry.forEach((entry) => {
-      // Log incoming events
-      console.log("Webhook Event:", JSON.stringify(entry));
+      // Handle messaging events
+      if (entry.messaging) {
+        entry.messaging.forEach((event) => {
+          if (event.message && event.sender) {
+            const senderId = event.sender.id;
+            const receivedMessage = event.message.text;
 
-      // Handle specific changes (like/follow events)
+            console.log(`Received message: ${receivedMessage} from user ${senderId}`);
+
+            // Auto-reply to the user's message
+            handleMessage(senderId, receivedMessage);
+          }
+        });
+      }
+
+      // Handle feed changes (like/follow events)
       if (entry.changes) {
         entry.changes.forEach((change) => {
           if (change.field === "feed" && change.value.verb === "add") {
@@ -76,10 +60,9 @@ app.post("/webhook", (req, res) => {
             const userName = change.value.from.name;
 
             const greeting = getTimeBasedGreeting();
-            const message = `${greeting}, ${userName}! Thank you for following our page. We’re excited to connect with you! 😊`;
+            const message = `${greeting}, ${userName}! Thank you for following our page. 😊`;
 
-            // Send a rich message with quick replies and an image
-            sendRichMessage(senderId, message);
+            sendMessage(senderId, message);
           }
         });
       }
@@ -91,37 +74,38 @@ app.post("/webhook", (req, res) => {
   }
 });
 
-// Function to send a message with quick replies and an image
-function sendRichMessage(senderId, message) {
+// Function to reply to a user message
+function handleMessage(senderId, receivedMessage) {
+  let response;
+
+  // Basic keyword-based response
+  if (receivedMessage.toLowerCase() === "hi" || receivedMessage.toLowerCase() === "hello") {
+    response = "Hello! 😊 How can I assist you today?";
+  } else if (receivedMessage.toLowerCase().includes("help")) {
+    response = "Sure! Let me know what you need help with.";
+  } else {
+    response = "Thank you for reaching out! We'll get back to you soon.";
+  }
+
+  // Send the response back to the user
+  sendMessage(senderId, response);
+}
+
+// Function to get a time-based greeting
+function getTimeBasedGreeting() {
+  const now = new Date();
+  const hours = now.getHours();
+
+  if (hours < 12) return "Good Morning";
+  if (hours < 18) return "Good Afternoon";
+  return "Good Evening";
+}
+
+// Function to send a text message
+function sendMessage(senderId, message) {
   const payload = {
     recipient: { id: senderId },
-    message: {
-      attachment: {
-        type: "template",
-        payload: {
-          template_type: "generic",
-          elements: [
-            {
-              title: message,
-              image_url: "https://i.ibb.co/2cQVbcb", // Your hosted image
-              subtitle: "Explore our page for more updates!",
-              buttons: [
-                {
-                  type: "web_url",
-                  url: "https://your-website.com",
-                  title: "Visit Our Website",
-                },
-                {
-                  type: "postback",
-                  title: "Contact Us",
-                  payload: "CONTACT_US",
-                },
-              ],
-            },
-          ],
-        },
-      },
-    },
+    message: { text: message },
   };
 
   request.post(
@@ -131,20 +115,14 @@ function sendRichMessage(senderId, message) {
       json: payload,
     },
     (err, res, body) => {
-      if (err) {
-        console.error("Error sending message:", err);
-      } else {
+      if (!err) {
         console.log("Message sent successfully!");
+      } else {
+        console.error("Error sending message:", err);
       }
     }
   );
 }
-
-// Function to handle errors
-app.use((err, req, res, next) => {
-  console.error("Error occurred:", err.message);
-  res.status(500).send({ error: "Something went wrong!" });
-});
 
 // Start the server
 app.listen(PORT, () => {
